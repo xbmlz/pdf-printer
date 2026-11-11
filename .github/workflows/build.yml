@@ -1,0 +1,65 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [ master, vs ]
+    tags: [ 'v*' ]          # 推送 v 开头的 tag（如 v1.0.0）时自动发布 Release
+  pull_request:
+  workflow_dispatch:         # 允许手动触发
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 安装 Qt 5.6.3 (MinGW 4.9, 32 位) 及配套 MinGW 工具链
+      - name: Install Qt 5.6.3 (mingw49_32)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.6.3'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win32_mingw49'
+          tools: 'tools_mingw,qt.tools.win32_mingw492'
+          add-tools-to-path: true
+          cache: true
+
+      - name: Configure (CMake, MinGW Makefiles)
+        run: >
+          cmake -S . -B build -G "MinGW Makefiles"
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT_DIR }}"
+          -DCMAKE_SH="CMAKE_SH-NOTFOUND"
+
+      - name: Build (Release)
+        run: cmake --build build --config Release -- -j
+
+      # 收集可执行文件 + windeployqt/Poppler 复制进来的运行时
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build\NGPrinter.exe dist\
+          Copy-Item build\*.dll dist\ -ErrorAction SilentlyContinue
+          foreach ($d in 'platforms','imageformats','iconengines','bearer','printsupport','styles','translations') {
+            if (Test-Path "build\$d") { Copy-Item "build\$d" dist\ -Recurse -Force }
+          }
+          Compress-Archive -Path dist\* -DestinationPath NGPrinter-windows.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NGPrinter-windows
+          path: dist/
+
+      # 仅当推送的是 tag 时，创建 GitHub Release 并附带 zip
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: NGPrinter-windows.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
