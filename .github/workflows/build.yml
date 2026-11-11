@@ -64,6 +64,8 @@ jobs:
                       continue
                   found.add(component)
                   for name, archive_start, size in read_entries(start):
+                      if not name.endswith(".7z"):
+                          continue
                       archive = root / pathlib.Path(name).name
                       with archive.open("wb") as output:
                           for offset in range(archive_start, archive_start + size, 2**20):
