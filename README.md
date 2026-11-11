@@ -80,6 +80,7 @@ git push origin v1.0.0
 | url     | 是   | string | PDF文件URL                     |
 | printer | 否   | string | 打印机名称, 不传则为默认打印机 |
 | copies  | 否   | int    | 打印份数, 默认为1              |
+| fit     | 否   | int    | 默认为实际尺寸打印，传 1 时等比适合可打印区域 |
 
 **返回格式:**  json
 

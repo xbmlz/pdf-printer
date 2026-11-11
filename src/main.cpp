@@ -120,7 +120,7 @@ void downloadFile(QString url, QString savePath)
 
 void handleRoot(const httplib::Request &, httplib::Response &resp)
 {
-    resp.set_content("This is an print pdf server, build by NGPacs, version 1.0.0", "text/plain");
+    resp.set_content("This is an print pdf server, build by NGPacs, version 1.1.0", "text/plain");
 }
 
 void handlePrint(const httplib::Request &req, httplib::Response &resp)
@@ -142,6 +142,8 @@ void handlePrint(const httplib::Request &req, httplib::Response &resp)
     {
         copies = 1;
     }
+
+    const bool fitToPage = req.has_param("fit") && req.get_param_value("fit") == "1";
 
     // 2. 准备下载目录与临时文件（打印结束后自动清理）
     QDir downloadDir(QDir::currentPath() + "/downloads");
@@ -194,8 +196,6 @@ void handlePrint(const httplib::Request &req, httplib::Response &resp)
 
     // 5. 配置打印机
     QPrinter printer(QPrinter::HighResolution);
-    printer.setPageSize(QPrinter::A4);
-    printer.setCopyCount(copies);
     if (!printerName.isEmpty())
     {
         QPrinterInfo info = QPrinterInfo::printerInfo(printerName);
@@ -206,6 +206,14 @@ void handlePrint(const httplib::Request &req, httplib::Response &resp)
         }
         printer.setPrinterName(printerName);
     }
+
+    printer.setPageSize(QPrinter::A4);
+    printer.setCopyCount(copies);
+
+    // 在启用整纸坐标之前读取驱动提供的可打印区域。
+    const QRectF printable = printer.pageRect(QPrinter::DevicePixel);
+    printer.setFullPage(true);
+    const QRectF paper = printer.paperRect(QPrinter::DevicePixel);
 
     // 6. 逐页渲染并打印（单个 QPainter，页间 newPage；用 QImage 避免非 GUI 线程操作 QPixmap）
     QPainter painter;
@@ -228,15 +236,19 @@ void handlePrint(const httplib::Request &req, httplib::Response &resp)
             continue;
         }
 
-        QImage image = page->renderToImage(300, 300);
-
-        QRect rect = painter.viewport();
-        QSize size = image.size();
-        size.scale(rect.size(), Qt::KeepAspectRatio);
-
-        painter.setViewport(rect.x(), rect.y(), size.width(), size.height());
-        painter.setWindow(image.rect());
-        painter.drawImage(0, 0, image);
+        const QImage image = page->renderToImage(300, 300);
+        // PDF 尺寸以点为单位，每英寸 72 点。光栅化 DPI 只影响清晰度。
+        const QSizeF points = page->pageSizeF();
+        QSizeF size(points.width() * printer.logicalDpiX() / 72.0,
+                    points.height() * printer.logicalDpiY() / 72.0);
+        const QRectF area = fitToPage ? printable : paper;
+        if (fitToPage)
+        {
+            size.scale(area.size(), Qt::KeepAspectRatio);
+        }
+        QRectF target(QPointF(), size);
+        target.moveCenter(area.center());
+        painter.drawImage(target, image);
     }
     painter.end();
 

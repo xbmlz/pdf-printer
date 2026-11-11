@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 set(PROJECT_NAME NGPrinter)
-project(${PROJECT_NAME} VERSION 1.0.0 LANGUAGES C CXX)
+project(${PROJECT_NAME} VERSION 1.1.0 LANGUAGES C CXX)
 
 # 本地默认路径；CI 可用 -DCMAKE_PREFIX_PATH=... 覆盖
 if(NOT CMAKE_PREFIX_PATH)
