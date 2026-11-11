@@ -16,11 +16,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Qt 5.6.3 and MinGW 4.9.2
+        timeout-minutes: 12
         shell: pwsh
         run: |
           $root = Join-Path $env:RUNNER_TEMP 'Qt563'
           $installer = Join-Path $env:RUNNER_TEMP 'qt563.exe'
-          curl.exe --fail --location --retry 3 -o $installer https://download.qt.io/archive/qt/5.6/5.6.3/qt-opensource-windows-x86-mingw492-5.6.3.exe
+          curl.exe --fail --location --retry 3 --connect-timeout 20 --max-time 300 --silent --show-error -o $installer https://download.qt.io/archive/qt/5.6/5.6.3/qt-opensource-windows-x86-mingw492-5.6.3.exe
           if ($LASTEXITCODE -ne 0) { throw 'Qt installer download failed' }
           $control = Join-Path $env:RUNNER_TEMP 'qt-install.qs'
           @"
@@ -28,6 +29,7 @@ jobs:
             installer.autoRejectMessageBoxes();
             installer.setValue("TargetDir", "$($root.Replace('\','/'))");
           }
+          Controller.prototype.CredentialsPageCallback = function() { gui.clickButton(buttons.SkipButton); }
           Controller.prototype.IntroductionPageCallback = function() { gui.clickButton(buttons.NextButton); }
           Controller.prototype.TargetDirectoryPageCallback = function() { gui.clickButton(buttons.NextButton); }
           Controller.prototype.ComponentSelectionPageCallback = function() {
@@ -46,7 +48,11 @@ jobs:
             gui.clickButton(buttons.FinishButton);
           }
           "@ | Set-Content $control
-          $process = Start-Process $installer -ArgumentList @('--script', "`"$control`"") -WindowStyle Hidden -Wait -PassThru
+          Write-Host "Starting Qt offline installer"
+          $installerLog = Join-Path $env:RUNNER_TEMP "qt-installer.log"
+          $process = Start-Process $installer -RedirectStandardOutput $installerLog -ArgumentList @('--verbose', '--script', "`"$control`"") -WindowStyle Hidden -PassThru
+          if (!$process.WaitForExit(300000)) { $process.Kill(); Get-Content $installerLog -Tail 80; throw "Qt installer timed out" }
+          Get-Content $installerLog -Tail 30
           if ($process.ExitCode -ne 0) { throw "Qt installer exited with $($process.ExitCode)" }
           $qt = Join-Path $root '5.6.3/mingw49_32'
           $gcc = Get-ChildItem "$root/Tools" -Recurse -Filter g++.exe | Select-Object -First 1
