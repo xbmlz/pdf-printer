@@ -2,7 +2,7 @@ name: Build & Release
 
 on:
   push:
-    branches: [ master, vs ]
+    branches: [ main, vs ]
     tags: [ 'v*' ]          # 推送 v 开头的 tag（如 v1.0.0）时自动发布 Release
   pull_request:
   workflow_dispatch:         # 允许手动触发
@@ -15,17 +15,45 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 安装 Qt 5.6.3 (MinGW 4.9, 32 位) 及配套 MinGW 工具链
-      - name: Install Qt 5.6.3 (mingw49_32)
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '5.6.3'
-          host: 'windows'
-          target: 'desktop'
-          arch: 'win32_mingw49'
-          tools: 'tools_mingw,qt.tools.win32_mingw492'
-          add-tools-to-path: true
-          cache: true
+      - name: Install Qt 5.6.3 and MinGW 4.9.2
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'Qt563'
+          $installer = Join-Path $env:RUNNER_TEMP 'qt563.exe'
+          curl.exe --fail --location --retry 3 -o $installer https://download.qt.io/archive/qt/5.6/5.6.3/qt-opensource-windows-x86-mingw492-5.6.3.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Qt installer download failed' }
+          $control = Join-Path $env:RUNNER_TEMP 'qt-install.qs'
+          @"
+          function Controller() {
+            installer.autoRejectMessageBoxes();
+            installer.setValue("TargetDir", "$($root.Replace('\','/'))");
+          }
+          Controller.prototype.IntroductionPageCallback = function() { gui.clickButton(buttons.NextButton); }
+          Controller.prototype.TargetDirectoryPageCallback = function() { gui.clickButton(buttons.NextButton); }
+          Controller.prototype.ComponentSelectionPageCallback = function() {
+            gui.currentPageWidget().selectAll();
+            gui.clickButton(buttons.NextButton);
+          }
+          Controller.prototype.LicenseAgreementPageCallback = function() {
+            gui.currentPageWidget().AcceptLicenseRadioButton.checked = true;
+            gui.clickButton(buttons.NextButton);
+          }
+          Controller.prototype.StartMenuDirectoryPageCallback = function() { gui.clickButton(buttons.NextButton); }
+          Controller.prototype.ReadyForInstallationPageCallback = function() { gui.clickButton(buttons.NextButton); }
+          Controller.prototype.FinishedPageCallback = function() {
+            var page = gui.currentPageWidget();
+            if (page.RunItCheckBox) page.RunItCheckBox.checked = false;
+            gui.clickButton(buttons.FinishButton);
+          }
+          "@ | Set-Content $control
+          $process = Start-Process $installer -ArgumentList @('--script', "`"$control`"") -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Qt installer exited with $($process.ExitCode)" }
+          $qt = Join-Path $root '5.6.3/mingw49_32'
+          $gcc = Get-ChildItem "$root/Tools" -Recurse -Filter g++.exe | Select-Object -First 1
+          if (!(Test-Path "$qt/bin/qmake.exe") -or !$gcc) { throw 'Qt or MinGW was not installed' }
+          "QT_ROOT_DIR=$qt" >> $env:GITHUB_ENV
+          $gcc.DirectoryName >> $env:GITHUB_PATH
+          "$qt/bin" >> $env:GITHUB_PATH
 
       - name: Configure (CMake, MinGW Makefiles)
         run: >
