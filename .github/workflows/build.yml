@@ -15,55 +15,73 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Qt 5.6.3 and MinGW 4.9.2
+      - name: Extract Qt 5.6.3 and MinGW 4.9.2
         timeout-minutes: 12
         shell: pwsh
         run: |
           $root = Join-Path $env:RUNNER_TEMP 'Qt563'
           $installer = Join-Path $env:RUNNER_TEMP 'qt563.exe'
-          curl.exe --fail --location --retry 3 --connect-timeout 20 --max-time 300 --silent --show-error -o $installer https://download.qt.io/archive/qt/5.6/5.6.3/qt-opensource-windows-x86-mingw492-5.6.3.exe
+          curl.exe --fail --location --retry 2 --connect-timeout 20 --max-time 300 --silent --show-error -o $installer https://download.qt.io/archive/qt/5.6/5.6.3/qt-opensource-windows-x86-mingw492-5.6.3.exe
           if ($LASTEXITCODE -ne 0) { throw 'Qt installer download failed' }
-          $control = Join-Path $env:RUNNER_TEMP 'qt-install.qs'
-          @"
-          function Controller() {
-            installer.autoRejectMessageBoxes();
-            installer.setValue("TargetDir", "$($root.Replace('\','/'))");
+          # Read the Qt Installer Framework component index and extract only the two required components.
+          @'
+          import mmap
+          import pathlib
+          import struct
+          import subprocess
+          import sys
+
+          installer, root = map(pathlib.Path, sys.argv[1:])
+          components = {
+              "qt.563.win32_mingw49": root / "qt",
+              "qt.tools.win32_mingw492": root / "mingw",
           }
-          Controller.prototype.CredentialsPageCallback = function() { gui.clickButton(buttons.SkipButton); }
-          Controller.prototype.WelcomePageCallback = function() { gui.clickButton(buttons.NextButton, 1500); }
-          Controller.prototype.IntroductionPageCallback = function() { gui.clickButton(buttons.NextButton); }
-          Controller.prototype.TargetDirectoryPageCallback = function() { gui.clickButton(buttons.NextButton); }
-          Controller.prototype.ComponentSelectionPageCallback = function() {
-            var page = gui.currentPageWidget();
-            page.deselectAll();
-            page.selectComponent("qt.563.win32_mingw49");
-            page.selectComponent("qt.tools.win32_mingw492");
-            gui.clickButton(buttons.NextButton);
-          }
-          Controller.prototype.LicenseAgreementPageCallback = function() {
-            gui.currentPageWidget().AcceptLicenseRadioButton.checked = true;
-            gui.clickButton(buttons.NextButton);
-          }
-          Controller.prototype.StartMenuDirectoryPageCallback = function() { gui.clickButton(buttons.NextButton); }
-          Controller.prototype.ReadyForInstallationPageCallback = function() { gui.clickButton(buttons.NextButton); }
-          Controller.prototype.FinishedPageCallback = function() {
-            var page = gui.currentPageWidget();
-            if (page.RunItCheckBox) page.RunItCheckBox.checked = false;
-            gui.clickButton(buttons.FinishButton);
-          }
-          "@ | Set-Content $control
-          Write-Host "Starting Qt offline installer"
-          $installerLog = Join-Path $env:RUNNER_TEMP "qt-installer.log"
-          $process = Start-Process $installer -RedirectStandardOutput $installerLog -ArgumentList @('--verbose', '--script', "`"$control`"") -WindowStyle Hidden -PassThru
-          if (!$process.WaitForExit(300000)) { $process.Kill(); Get-Content $installerLog -Tail 80; throw "Qt installer timed out" }
-          Get-Content $installerLog -Tail 30
-          if ($process.ExitCode -ne 0) { throw "Qt installer exited with $($process.ExitCode)" }
-          $qt = Join-Path $root '5.6.3/mingw49_32'
-          $gcc = Get-ChildItem "$root/Tools" -Recurse -Filter g++.exe | Select-Object -First 1
-          if (!(Test-Path "$qt/bin/qmake.exe") -or !$gcc) { throw 'Qt or MinGW was not installed' }
+          root.mkdir(parents=True, exist_ok=True)
+          with installer.open("rb") as source, mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as data:
+              cookie = bytes.fromhex("f868d6991c0a63c2")
+              end = data.rfind(cookie, max(0, len(data) - 2**20)) + len(cookie)
+              if end <= len(cookie):
+                  raise ValueError("Qt installer footer was not found")
+              metadata_count, content_size = struct.unpack_from("<qq", data, end - 32)
+              base = end - content_size
+              index_offset, _ = struct.unpack_from("<qq", data, end - 32 - 16 * (metadata_count + 2))
+
+              def read_entries(offset):
+                  count, = struct.unpack_from("<q", data, offset)
+                  offset += 8
+                  for _ in range(count):
+                      length, = struct.unpack_from("<q", data, offset)
+                      offset += 8
+                      name = data[offset:offset + length].decode("utf-8")
+                      offset += length
+                      start, size = struct.unpack_from("<qq", data, offset)
+                      offset += 16
+                      yield name, base + start, size
+
+              found = set()
+              for component, start, _ in read_entries(base + index_offset):
+                  if component not in components:
+                      continue
+                  found.add(component)
+                  for name, archive_start, size in read_entries(start):
+                      archive = root / pathlib.Path(name).name
+                      with archive.open("wb") as output:
+                          for offset in range(archive_start, archive_start + size, 2**20):
+                              output.write(data[offset:min(offset + 2**20, archive_start + size)])
+                      subprocess.run(["7z", "x", "-y", "-bso0", f"-o{components[component]}", str(archive)], check=True)
+                      archive.unlink()
+              if found != components.keys():
+                  raise ValueError(f"Qt installer components missing: {components.keys() - found}")
+          '@ | python - $installer $root
+          if ($LASTEXITCODE -ne 0) { throw 'Qt extraction failed' }
+          $qmake = Get-ChildItem "$root/qt" -Recurse -Filter qmake.exe | Select-Object -First 1
+          $gcc = Get-ChildItem "$root/mingw" -Recurse -Filter g++.exe | Select-Object -First 1
+          if (!$qmake -or !$gcc) { throw 'Qt or MinGW binaries were not found' }
+          $qt = Split-Path $qmake.DirectoryName -Parent
+          "[Paths]`nPrefix=.." | Set-Content (Join-Path $qmake.DirectoryName 'qt.conf')
           "QT_ROOT_DIR=$qt" >> $env:GITHUB_ENV
           $gcc.DirectoryName >> $env:GITHUB_PATH
-          "$qt/bin" >> $env:GITHUB_PATH
+          $qmake.DirectoryName >> $env:GITHUB_PATH
 
       - name: Configure (CMake, MinGW Makefiles)
         run: >
