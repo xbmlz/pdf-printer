@@ -30,10 +30,14 @@ jobs:
             installer.setValue("TargetDir", "$($root.Replace('\','/'))");
           }
           Controller.prototype.CredentialsPageCallback = function() { gui.clickButton(buttons.SkipButton); }
+          Controller.prototype.WelcomePageCallback = function() { gui.clickButton(buttons.NextButton, 1500); }
           Controller.prototype.IntroductionPageCallback = function() { gui.clickButton(buttons.NextButton); }
           Controller.prototype.TargetDirectoryPageCallback = function() { gui.clickButton(buttons.NextButton); }
           Controller.prototype.ComponentSelectionPageCallback = function() {
-            gui.currentPageWidget().selectAll();
+            var page = gui.currentPageWidget();
+            page.deselectAll();
+            page.selectComponent("qt.563.win32_mingw49");
+            page.selectComponent("qt.tools.win32_mingw492");
             gui.clickButton(buttons.NextButton);
           }
           Controller.prototype.LicenseAgreementPageCallback = function() {
